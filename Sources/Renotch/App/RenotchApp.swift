@@ -129,6 +129,8 @@ private struct MenuBarContent: View {
 
         Divider()
 
+        MusicMenuSection(music: model.music)
+
         TimerMenuSection(timer: model.timer)
 
         Button("Settings…") { AppDelegate.shared?.openSettings() }
@@ -146,6 +148,29 @@ private struct MenuBarContent: View {
     private var activityMenuTitle: String {
         let activity = model.activity.primaryActivity
         return "\(activity.title) · \(activity.subtitle)"
+    }
+}
+
+private struct MusicMenuSection: View {
+    @ObservedObject var music: MusicService
+
+    var body: some View {
+        if let track = music.track, music.playbackState != .notRunning {
+            Button("\(music.isPlaying ? "Playing" : "Paused"): \(track.title) · \(track.artist)") {
+                AppDelegate.shared?.showNotch()
+                AppDelegate.shared?.model.expand(section: .music, pin: true)
+            }
+            Button(music.isPlaying ? "Pause" : "Play") {
+                music.togglePlayback()
+            }
+            Button("Next Track") {
+                music.nextTrack()
+            }
+            Button("Previous Track") {
+                music.previousTrack()
+            }
+            Divider()
+        }
     }
 }
 

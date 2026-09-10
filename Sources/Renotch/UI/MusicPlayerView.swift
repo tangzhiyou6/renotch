@@ -7,7 +7,7 @@ struct MusicPlayerView: View {
 
     var body: some View {
         HStack(spacing: 14) {
-            AlbumArtworkView(artwork: music.artwork, cornerRadius: 12)
+            AlbumArtworkView(artwork: music.artwork, cornerRadius: 12, fallbackSource: music.activeSource)
                 .frame(width: 82, height: 82)
                 .shadow(color: .black.opacity(0.45), radius: 10, y: 5)
                 .overlay(alignment: .bottomLeading) {
@@ -262,28 +262,6 @@ struct MusicPlayerView: View {
     }
 }
 
-struct QQMusicIconLoader {
-    static let shared = QQMusicIconLoader()
-
-    var iconImage: NSImage? {
-        if let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: MusicSource.qqMusic.bundleIdentifier) {
-            let icon = NSWorkspace.shared.icon(forFile: appURL.path)
-            return icon
-        }
-        if let url = Bundle.main.url(forResource: "QQMusicIcon", withExtension: "png"),
-           let image = NSImage(contentsOf: url) {
-            return image
-        }
-        if let bundleURL = Bundle.main.resourceURL?.appendingPathComponent("Renotch_Renotch.bundle"),
-           let bundle = Bundle(url: bundleURL),
-           let url = bundle.url(forResource: "QQMusicIcon", withExtension: "png"),
-           let image = NSImage(contentsOf: url) {
-            return image
-        }
-        return nil
-    }
-}
-
 struct MusicSourceBadge: View {
     let source: MusicSource
     var size: CGFloat = 17
@@ -369,17 +347,27 @@ struct AppleMusicBadge: View {
 struct AlbumArtworkView: View {
     let artwork: NSImage?
     var cornerRadius: CGFloat = 10
+    var fallbackSource: MusicSource? = nil
+
     var body: some View {
         Group {
             if let artwork {
                 Image(nsImage: artwork)
                     .resizable()
                     .aspectRatio(contentMode: .fill)
+            } else if fallbackSource == .qqMusic, let icon = QQMusicIconLoader.shared.iconImage {
+                ZStack {
+                    Color(red: 0.12, green: 0.12, blue: 0.14)
+                    Image(nsImage: icon)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .padding(cornerRadius > 8 ? 10 : 3)
+                }
             } else {
                 ZStack {
                     Color(red: 0.12, green: 0.12, blue: 0.14)
                     Image(systemName: "music.note")
-                        .font(.system(size: 18, weight: .medium))
+                        .font(.system(size: cornerRadius > 8 ? 22 : 12, weight: .medium))
                         .foregroundStyle(Color.white.opacity(0.46))
                 }
             }

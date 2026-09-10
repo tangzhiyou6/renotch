@@ -5,10 +5,11 @@ struct CompactMusicView: View {
     @ObservedObject var timer: TimerService
     let message: String?
     var showsTrackInfo = false
+    @State private var isHovered = false
 
     var body: some View {
         HStack(spacing: 9) {
-            AlbumArtworkView(artwork: music.artwork, cornerRadius: 6)
+            AlbumArtworkView(artwork: music.artwork, cornerRadius: 6, fallbackSource: music.activeSource)
                 .frame(width: 24, height: 24)
                 .overlay(alignment: .bottomLeading) {
                     MusicSourceBadge(source: music.activeSource, size: 10)
@@ -72,6 +73,51 @@ struct CompactMusicView: View {
                 )
                 .transition(.opacity.combined(with: .scale(scale: 0.9)))
                 .animation(.snappy(duration: 0.25), value: timer.isActive)
+            } else if isHovered {
+                HStack(spacing: 5) {
+                    Button {
+                        music.previousTrack()
+                    } label: {
+                        Image(systemName: "backward.fill")
+                            .font(.system(size: 8, weight: .semibold))
+                            .foregroundStyle(.white.opacity(0.9))
+                            .frame(width: 17, height: 17)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Previous Track")
+
+                    Button {
+                        music.togglePlayback()
+                    } label: {
+                        Image(systemName: music.isPlaying ? "pause.fill" : "play.fill")
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundStyle(.white)
+                            .frame(width: 17, height: 17)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help(music.isPlaying ? "Pause" : "Play")
+
+                    Button {
+                        music.nextTrack()
+                    } label: {
+                        Image(systemName: "forward.fill")
+                            .font(.system(size: 8, weight: .semibold))
+                            .foregroundStyle(.white.opacity(0.9))
+                            .frame(width: 17, height: 17)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Next Track")
+                }
+                .padding(.horizontal, 4)
+                .padding(.vertical, 2)
+                .background(
+                    Capsule()
+                        .fill(Color.white.opacity(0.12))
+                )
+                .transition(.opacity.combined(with: .scale(scale: 0.92)))
             } else {
                 AudioWaveform(isPlaying: music.isPlaying, barCount: 6)
                     .frame(width: 24, height: 11)
@@ -79,6 +125,11 @@ struct CompactMusicView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .onHover { hovering in
+            withAnimation(.snappy(duration: 0.2)) {
+                isHovered = hovering
+            }
+        }
         .animation(.easeOut(duration: 0.18), value: showsTrackInfo)
     }
 

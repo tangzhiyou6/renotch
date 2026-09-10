@@ -98,6 +98,7 @@ final class MusicService: ObservableObject {
 
     private static let artworkCache = NSCache<NSString, NSImage>()
     private var pollingTimer: Timer?
+    private var idleTimer: Timer?
     private var refreshInFlight = false
     private var snapshots: [MusicSource: MusicSnapshot] = [:]
     private var activationDates: [MusicSource: Date] = [:]
@@ -114,6 +115,7 @@ final class MusicService: ObservableObject {
 
     deinit {
         pollingTimer?.invalidate()
+        idleTimer?.invalidate()
         artworkTask?.cancel()
         DistributedNotificationCenter.default().removeObserver(self)
         NotificationCenter.default.removeObserver(self)
@@ -153,6 +155,8 @@ final class MusicService: ObservableObject {
 
     func updatePollingTimerState() {
         if isPlaying {
+            idleTimer?.invalidate()
+            idleTimer = nil
             guard pollingTimer == nil else { return }
             pollingTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
                 Task { @MainActor in self?.refresh() }
@@ -161,12 +165,19 @@ final class MusicService: ObservableObject {
         } else {
             pollingTimer?.invalidate()
             pollingTimer = nil
+            guard idleTimer == nil else { return }
+            idleTimer = Timer.scheduledTimer(withTimeInterval: 2.5, repeats: true) { [weak self] _ in
+                Task { @MainActor in self?.refresh() }
+            }
+            idleTimer?.tolerance = 0.5
         }
     }
 
     func pause() {
         pollingTimer?.invalidate()
         pollingTimer = nil
+        idleTimer?.invalidate()
+        idleTimer = nil
     }
 
     func resume() {
@@ -178,7 +189,10 @@ final class MusicService: ObservableObject {
 
     func togglePlayback() {
         if activeSource == .qqMusic {
-            runQQMusicCommand("click menu item 1 of menu 1 of menu bar item \"播放控制\" of menu bar 1")
+            MediaRemoteBridge.sendCommand(2) // MRMediaRemoteCommandTogglePlayPause
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+                self?.refresh()
+            }
             return
         }
         runCommand("playpause")
@@ -186,7 +200,10 @@ final class MusicService: ObservableObject {
 
     func previousTrack() {
         if activeSource == .qqMusic {
-            runQQMusicCommand("click menu item 2 of menu 1 of menu bar item \"播放控制\" of menu bar 1")
+            MediaRemoteBridge.sendCommand(5) // MRMediaRemoteCommandPreviousTrack
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+                self?.refresh()
+            }
             return
         }
         runCommand("previous track")
@@ -194,7 +211,10 @@ final class MusicService: ObservableObject {
 
     func nextTrack() {
         if activeSource == .qqMusic {
-            runQQMusicCommand("click menu item 3 of menu 1 of menu bar item \"播放控制\" of menu bar 1")
+            MediaRemoteBridge.sendCommand(4) // MRMediaRemoteCommandNextTrack
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+                self?.refresh()
+            }
             return
         }
         runCommand("next track")
@@ -209,7 +229,10 @@ final class MusicService: ObservableObject {
         case .spotify:
             runCommand("set shuffling to \(nextValue)")
         case .qqMusic:
-            runQQMusicCommand("click menu item 1 of menu of menu item \"播放模式\" of menu 1 of menu bar item \"播放控制\" of menu bar 1")
+            MediaRemoteBridge.sendCommand(6) // MRMediaRemoteCommandAdvanceShuffleMode
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+                self?.refresh()
+            }
         }
     }
 
@@ -222,10 +245,9 @@ final class MusicService: ObservableObject {
         case .spotify:
             runCommand("set repeating to \(nextMode == .off ? "false" : "true")")
         case .qqMusic:
-            if nextMode == .one {
-                runQQMusicCommand("click menu item 2 of menu of menu item \"播放模式\" of menu 1 of menu bar item \"播放控制\" of menu bar 1")
-            } else {
-                runQQMusicCommand("click menu item 3 of menu of menu item \"播放模式\" of menu 1 of menu bar item \"播放控制\" of menu bar 1")
+            MediaRemoteBridge.sendCommand(7) // MRMediaRemoteCommandAdvanceRepeatMode
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+                self?.refresh()
             }
         }
     }
@@ -234,7 +256,9 @@ final class MusicService: ObservableObject {
         let safePosition = value.clamped(to: 0...(track?.duration ?? max(value, 0)))
         if activeSource == .qqMusic {
             MediaRemoteBridge.setElapsedTime(safePosition)
-            refresh()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+                self?.refresh()
+            }
             return
         }
         runCommand("set player position to \(safePosition)")
@@ -269,24 +293,6 @@ final class MusicService: ObservableObject {
 
     func openQQMusic() {
         open(.qqMusic)
-    }
-
-    private func runQQMusicCommand(_ scriptBody: String) {
-        let script = """
-        tell application "System Events"
-            if exists process "QQMusic" then
-                tell process "QQMusic"
-                    try
-                        \(scriptBody)
-                    end try
-                end tell
-            end if
-        end tell
-        """
-        Task {
-            _ = await Self.executeAsync(script)
-            self.refresh()
-        }
     }
 
     func isInstalled(_ source: MusicSource) -> Bool {
@@ -574,6 +580,10 @@ final class MusicService: ObservableObject {
                         self.loadingTrackID = nil
                     }
                 } else if self.track?.id == track.id && self.artworkRequestID == requestID {
+                    if track.source == .qqMusic, let appIcon = QQMusicIconLoader.shared.iconImage {
+                        Self.artworkCache.setObject(appIcon, forKey: track.cacheKey as NSString)
+                        self.artwork = appIcon
+                    }
                     self.loadingTrackID = nil
                 }
             }
@@ -656,116 +666,70 @@ final class MusicService: ObservableObject {
 
     nonisolated private static func fetchQQMusicArtwork() async -> NSImage? {
         if let info = await MediaRemoteBridge.getNowPlayingInfo(),
-           let data = info["kMRMediaRemoteNowPlayingInfoArtworkData"] as? Data {
-            return NSImage(data: data)
+           let data = info["kMRMediaRemoteNowPlayingInfoArtworkData"] as? Data,
+           let image = NSImage(data: data) {
+            return image
         }
         return nil
     }
 
     nonisolated private static func fetchQQMusicMetadata() async -> Result<String, AppleScriptFailure> {
-        let appleScript = """
-        tell application "System Events"
-            if not (exists process "QQMusic") then return "notRunning"
-            tell process "QQMusic"
-                set pState to "paused"
-                try
-                    set mName to name of menu item 1 of menu 1 of menu bar item "播放控制" of menu bar 1
-                    if mName is "暂停" then set pState to "playing"
-                end try
-                
-                set shuffleState to "false"
-                set repeatState to "off"
-                try
-                    set subItems to menu items of menu 1 of menu item "播放模式" of menu 1 of menu bar item "播放控制" of menu bar 1
-                    repeat with itm in subItems
-                        set itmName to name of itm
-                        set isMarked to (value of attribute "AXMenuItemMarkChar" of itm) is "✓"
-                        if isMarked then
-                            if itmName is "随机播放" then
-                                set shuffleState to "true"
-                            else if itmName is "单曲循环" then
-                                set repeatState to "one"
-                            else if itmName is "顺序播放" then
-                                set repeatState to "all"
-                            end if
-                        end if
-                    end repeat
-                end try
-                
-                set songInfo to ""
-                try
-                    tell window 1
-                        set bar to (first UI element whose description is "播放控制栏")
-                        repeat with el in UI elements of bar
-                            set d to description of el as text
-                            if d starts with "歌曲名：" then
-                                set songInfo to d
-                                exit repeat
-                            end if
-                        end repeat
-                    end tell
-                end try
-                
-                return pState & "|" & shuffleState & "|" & repeatState & "|" & songInfo
-            end tell
-        end tell
-        """
-        let asResult = execute(appleScript)
-        var asPlayState = "paused"
-        var asShuffle = "false"
-        var asRepeat = "off"
-        var asWindowSong = ""
-
-        if case let .success(asOutput) = asResult {
-            if asOutput == "notRunning" {
-                return .success(MusicPlaybackState.notRunning.rawValue)
-            }
-            let parts = asOutput.components(separatedBy: "|")
-            if parts.count >= 3 {
-                asPlayState = parts[0]
-                asShuffle = parts[1]
-                asRepeat = parts[2]
-                if parts.count >= 4 {
-                    asWindowSong = parts[3]
-                }
-            }
-        } else if case let .failure(error) = asResult {
-            if error.code == -1743 {
-                return .failure(error)
-            }
+        let isRunning = !NSRunningApplication.runningApplications(
+            withBundleIdentifier: MusicSource.qqMusic.bundleIdentifier
+        ).isEmpty
+        guard isRunning else {
+            return .success(MusicPlaybackState.notRunning.rawValue)
         }
 
         let mrClient = await MediaRemoteBridge.getNowPlayingClient()
-        let isQQClient = mrClient?["bundleIdentifier"] as? String == MusicSource.qqMusic.bundleIdentifier
-        let mrInfo = isQQClient ? await MediaRemoteBridge.getNowPlayingInfo() : nil
-        let mrIsPlaying = await MediaRemoteBridge.getIsPlaying()
+        let clientID = mrClient?["bundleIdentifier"] as? String
+        let isQQClient = clientID == MusicSource.qqMusic.bundleIdentifier
 
-        var title = mrInfo?["kMRMediaRemoteNowPlayingInfoTitle"] as? String ?? ""
-        var artist = mrInfo?["kMRMediaRemoteNowPlayingInfoArtist"] as? String ?? ""
-        let album = mrInfo?["kMRMediaRemoteNowPlayingInfoAlbum"] as? String ?? ""
-        let duration = (mrInfo?["kMRMediaRemoteNowPlayingInfoDuration"] as? NSNumber)?.doubleValue ?? 0
-        let position = (mrInfo?["kMRMediaRemoteNowPlayingInfoElapsedTime"] as? NSNumber)?.doubleValue ?? 0
-
-        if title.isEmpty && asWindowSong.hasPrefix("歌曲名：") {
-            let stripped = asWindowSong.replacingOccurrences(of: "歌曲名：", with: "")
-            let segments = stripped.components(separatedBy: " - 歌手名：")
-            if segments.count >= 2 {
-                title = segments[0].trimmingCharacters(in: .whitespacesAndNewlines)
-                artist = segments[1].trimmingCharacters(in: .whitespacesAndNewlines)
-            } else {
-                title = stripped.trimmingCharacters(in: .whitespacesAndNewlines)
-            }
+        // If another recognized music app is playing as the active MR client, don't hijack it
+        if let clientID, clientID != MusicSource.qqMusic.bundleIdentifier,
+           (clientID == MusicSource.appleMusic.bundleIdentifier || clientID == MusicSource.spotify.bundleIdentifier) {
+            return .success(MusicPlaybackState.stopped.rawValue)
         }
 
-        let state = ((isQQClient && mrIsPlaying) || asPlayState == "playing") ? "playing" : "paused"
+        let mrInfo = await MediaRemoteBridge.getNowPlayingInfo()
+        let mrIsPlaying = await MediaRemoteBridge.getIsPlaying()
 
-        if title.isEmpty {
+        guard let mrInfo else {
             return .success(MusicPlaybackState.stopped.rawValue)
+        }
+
+        let rawTitle = mrInfo["kMRMediaRemoteNowPlayingInfoTitle"] as? String ?? ""
+        let rawArtist = mrInfo["kMRMediaRemoteNowPlayingInfoArtist"] as? String ?? ""
+        let album = mrInfo["kMRMediaRemoteNowPlayingInfoAlbum"] as? String ?? ""
+        let duration = (mrInfo["kMRMediaRemoteNowPlayingInfoDuration"] as? NSNumber)?.doubleValue ?? 0
+        let position = (mrInfo["kMRMediaRemoteNowPlayingInfoElapsedTime"] as? NSNumber)?.doubleValue ?? 0
+        let rate = (mrInfo["kMRMediaRemoteNowPlayingInfoPlaybackRate"] as? NSNumber)?.doubleValue ?? (mrIsPlaying ? 1.0 : 0.0)
+
+        let title: String
+        let artist: String
+        if rawTitle.isEmpty {
+            if isQQClient && (mrIsPlaying || rate > 0) {
+                title = "QQ音乐"
+                artist = "正在播放"
+            } else {
+                return .success(MusicPlaybackState.stopped.rawValue)
+            }
+        } else {
+            title = rawTitle
+            artist = rawArtist
+        }
+
+        let state = (isQQClient && (mrIsPlaying || rate > 0)) ? "playing" : "paused"
+
+        var realPosition = position
+        if state == "playing", let timestamp = mrInfo["kMRMediaRemoteNowPlayingInfoTimestamp"] as? Date {
+            let elapsed = max(0, Date().timeIntervalSince(timestamp))
+            realPosition = min(duration > 0 ? duration : Double.greatestFiniteMagnitude, position + elapsed * (rate > 0 ? rate : 1.0))
         }
 
         let sep = "\u{001F}"
         let trackID = "\(title):\(artist)"
-        let formatted = "\(state)\(sep)\(trackID)\(sep)\(title)\(sep)\(artist)\(sep)\(album)\(sep)\(duration)\(sep)\(position)\(sep)80\(sep)\(sep)\(asShuffle)\(sep)\(asRepeat)"
+        let formatted = "\(state)\(sep)\(trackID)\(sep)\(title)\(sep)\(artist)\(sep)\(album)\(sep)\(duration)\(sep)\(realPosition)\(sep)80\(sep)\(sep)false\(sep)off"
         return .success(formatted)
     }
 
@@ -883,6 +847,29 @@ final class MusicService: ObservableObject {
 private struct AppleScriptFailure: Error, Equatable, Sendable {
     let code: Int
     let message: String
+}
+
+@MainActor
+struct QQMusicIconLoader {
+    static let shared = QQMusicIconLoader()
+
+    var iconImage: NSImage? {
+        if let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: MusicSource.qqMusic.bundleIdentifier) {
+            let icon = NSWorkspace.shared.icon(forFile: appURL.path)
+            return icon
+        }
+        if let url = Bundle.main.url(forResource: "QQMusicIcon", withExtension: "png"),
+           let image = NSImage(contentsOf: url) {
+            return image
+        }
+        if let bundleURL = Bundle.main.resourceURL?.appendingPathComponent("Renotch_Renotch.bundle"),
+           let bundle = Bundle(url: bundleURL),
+           let url = bundle.url(forResource: "QQMusicIcon", withExtension: "png"),
+           let image = NSImage(contentsOf: url) {
+            return image
+        }
+        return nil
+    }
 }
 
 final class MediaRemoteBridge: @unchecked Sendable {
