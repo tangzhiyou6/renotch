@@ -4,11 +4,13 @@ import Foundation
 enum MusicSource: String, CaseIterable, Equatable, Sendable {
     case appleMusic
     case spotify
+    case qqMusic
 
     var displayName: String {
         switch self {
         case .appleMusic: return "Apple Music"
         case .spotify: return "Spotify"
+        case .qqMusic: return "QQ音乐"
         }
     }
 
@@ -16,6 +18,7 @@ enum MusicSource: String, CaseIterable, Equatable, Sendable {
         switch self {
         case .appleMusic: return "com.apple.Music"
         case .spotify: return "com.spotify.client"
+        case .qqMusic: return "com.tencent.QQMusicMac"
         }
     }
 
@@ -23,6 +26,7 @@ enum MusicSource: String, CaseIterable, Equatable, Sendable {
         switch self {
         case .appleMusic: return "Music"
         case .spotify: return "Spotify"
+        case .qqMusic: return "QQMusic"
         }
     }
 
@@ -112,6 +116,7 @@ final class MusicService: ObservableObject {
         pollingTimer?.invalidate()
         artworkTask?.cancel()
         DistributedNotificationCenter.default().removeObserver(self)
+        NotificationCenter.default.removeObserver(self)
     }
 
     private func setupDistributedObservers() {
@@ -127,6 +132,22 @@ final class MusicService: ObservableObject {
             object: nil, queue: .main
         ) { [weak self] _ in
             Task { @MainActor in self?.refresh() }
+        }
+
+        MediaRemoteBridge.registerForNotifications()
+        let localCenter = NotificationCenter.default
+        let mrNotifications = [
+            "kMRMediaRemoteNowPlayingInfoDidChangeNotification",
+            "kMRMediaRemoteNowPlayingApplicationIsPlayingDidChangeNotification",
+            "kMRMediaRemoteNowPlayingApplicationDidChangeNotification"
+        ]
+        for name in mrNotifications {
+            localCenter.addObserver(
+                forName: NSNotification.Name(name),
+                object: nil, queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor in self?.refresh() }
+            }
         }
     }
 
@@ -156,14 +177,26 @@ final class MusicService: ObservableObject {
     var isPlaying: Bool { playbackState == .playing }
 
     func togglePlayback() {
+        if activeSource == .qqMusic {
+            runQQMusicCommand("click menu item 1 of menu 1 of menu bar item \"播放控制\" of menu bar 1")
+            return
+        }
         runCommand("playpause")
     }
 
     func previousTrack() {
+        if activeSource == .qqMusic {
+            runQQMusicCommand("click menu item 2 of menu 1 of menu bar item \"播放控制\" of menu bar 1")
+            return
+        }
         runCommand("previous track")
     }
 
     func nextTrack() {
+        if activeSource == .qqMusic {
+            runQQMusicCommand("click menu item 3 of menu 1 of menu bar item \"播放控制\" of menu bar 1")
+            return
+        }
         runCommand("next track")
     }
 
@@ -175,6 +208,8 @@ final class MusicService: ObservableObject {
             runCommand("set shuffle enabled to \(nextValue)")
         case .spotify:
             runCommand("set shuffling to \(nextValue)")
+        case .qqMusic:
+            runQQMusicCommand("click menu item 1 of menu of menu item \"播放模式\" of menu 1 of menu bar item \"播放控制\" of menu bar 1")
         }
     }
 
@@ -186,17 +221,31 @@ final class MusicService: ObservableObject {
             runCommand("set song repeat to \(nextMode.rawValue)")
         case .spotify:
             runCommand("set repeating to \(nextMode == .off ? "false" : "true")")
+        case .qqMusic:
+            if nextMode == .one {
+                runQQMusicCommand("click menu item 2 of menu of menu item \"播放模式\" of menu 1 of menu bar item \"播放控制\" of menu bar 1")
+            } else {
+                runQQMusicCommand("click menu item 3 of menu of menu item \"播放模式\" of menu 1 of menu bar item \"播放控制\" of menu bar 1")
+            }
         }
     }
 
     func seek(to value: TimeInterval) {
         let safePosition = value.clamped(to: 0...(track?.duration ?? max(value, 0)))
+        if activeSource == .qqMusic {
+            MediaRemoteBridge.setElapsedTime(safePosition)
+            refresh()
+            return
+        }
         runCommand("set player position to \(safePosition)")
     }
 
     func setVolume(_ value: Double) {
         let safeVolume = value.clamped(to: 0...1)
         volume = safeVolume
+        if activeSource == .qqMusic {
+            return
+        }
         runCommand("set sound volume to \(Int((safeVolume * 100).rounded()))")
     }
 
@@ -216,6 +265,28 @@ final class MusicService: ObservableObject {
 
     func openSpotify() {
         open(.spotify)
+    }
+
+    func openQQMusic() {
+        open(.qqMusic)
+    }
+
+    private func runQQMusicCommand(_ scriptBody: String) {
+        let script = """
+        tell application "System Events"
+            if exists process "QQMusic" then
+                tell process "QQMusic"
+                    try
+                        \(scriptBody)
+                    end try
+                end tell
+            end if
+        end tell
+        """
+        Task {
+            _ = await Self.executeAsync(script)
+            self.refresh()
+        }
     }
 
     func isInstalled(_ source: MusicSource) -> Bool {
@@ -246,9 +317,16 @@ final class MusicService: ObservableObject {
     ) async -> [MusicSource: Result<String, AppleScriptFailure>] {
         var results: [MusicSource: Result<String, AppleScriptFailure>] = [:]
         for source in MusicSource.allCases {
-            results[source] = runningSources.contains(source)
-                ? execute(metadataScript(for: source))
-                : .success(MusicPlaybackState.notRunning.rawValue)
+            if !runningSources.contains(source) {
+                results[source] = .success(MusicPlaybackState.notRunning.rawValue)
+                continue
+            }
+            switch source {
+            case .appleMusic, .spotify:
+                results[source] = execute(metadataScript(for: source))
+            case .qqMusic:
+                results[source] = await fetchQQMusicMetadata()
+            }
         }
         return results
     }
@@ -453,6 +531,7 @@ final class MusicService: ObservableObject {
 
         if automationDeniedSources.contains(.spotify) { return .spotify }
         if automationDeniedSources.contains(.appleMusic) { return .appleMusic }
+        if automationDeniedSources.contains(.qqMusic) { return .qqMusic }
         return activeSource
     }
 
@@ -473,6 +552,8 @@ final class MusicService: ObservableObject {
                 loadedImage = await Self.fetchAppleMusicArtwork()
             case .spotify:
                 loadedImage = await Self.fetchRemoteArtwork(url: remoteURL)
+            case .qqMusic:
+                loadedImage = await Self.fetchQQMusicArtwork()
             }
 
             guard !Task.isCancelled else { return }
@@ -573,12 +654,129 @@ final class MusicService: ObservableObject {
         return .success(descriptor.stringValue ?? "")
     }
 
+    nonisolated private static func fetchQQMusicArtwork() async -> NSImage? {
+        if let info = await MediaRemoteBridge.getNowPlayingInfo(),
+           let data = info["kMRMediaRemoteNowPlayingInfoArtworkData"] as? Data {
+            return NSImage(data: data)
+        }
+        return nil
+    }
+
+    nonisolated private static func fetchQQMusicMetadata() async -> Result<String, AppleScriptFailure> {
+        let appleScript = """
+        tell application "System Events"
+            if not (exists process "QQMusic") then return "notRunning"
+            tell process "QQMusic"
+                set pState to "paused"
+                try
+                    set mName to name of menu item 1 of menu 1 of menu bar item "播放控制" of menu bar 1
+                    if mName is "暂停" then set pState to "playing"
+                end try
+                
+                set shuffleState to "false"
+                set repeatState to "off"
+                try
+                    set subItems to menu items of menu 1 of menu item "播放模式" of menu 1 of menu bar item "播放控制" of menu bar 1
+                    repeat with itm in subItems
+                        set itmName to name of itm
+                        set isMarked to (value of attribute "AXMenuItemMarkChar" of itm) is "✓"
+                        if isMarked then
+                            if itmName is "随机播放" then
+                                set shuffleState to "true"
+                            else if itmName is "单曲循环" then
+                                set repeatState to "one"
+                            else if itmName is "顺序播放" then
+                                set repeatState to "all"
+                            end if
+                        end if
+                    end repeat
+                end try
+                
+                set songInfo to ""
+                try
+                    tell window 1
+                        set bar to (first UI element whose description is "播放控制栏")
+                        repeat with el in UI elements of bar
+                            set d to description of el as text
+                            if d starts with "歌曲名：" then
+                                set songInfo to d
+                                exit repeat
+                            end if
+                        end repeat
+                    end tell
+                end try
+                
+                return pState & "|" & shuffleState & "|" & repeatState & "|" & songInfo
+            end tell
+        end tell
+        """
+        let asResult = execute(appleScript)
+        var asPlayState = "paused"
+        var asShuffle = "false"
+        var asRepeat = "off"
+        var asWindowSong = ""
+
+        if case let .success(asOutput) = asResult {
+            if asOutput == "notRunning" {
+                return .success(MusicPlaybackState.notRunning.rawValue)
+            }
+            let parts = asOutput.components(separatedBy: "|")
+            if parts.count >= 3 {
+                asPlayState = parts[0]
+                asShuffle = parts[1]
+                asRepeat = parts[2]
+                if parts.count >= 4 {
+                    asWindowSong = parts[3]
+                }
+            }
+        } else if case let .failure(error) = asResult {
+            if error.code == -1743 {
+                return .failure(error)
+            }
+        }
+
+        let mrClient = await MediaRemoteBridge.getNowPlayingClient()
+        let isQQClient = mrClient?["bundleIdentifier"] as? String == MusicSource.qqMusic.bundleIdentifier
+        let mrInfo = isQQClient ? await MediaRemoteBridge.getNowPlayingInfo() : nil
+        let mrIsPlaying = await MediaRemoteBridge.getIsPlaying()
+
+        var title = mrInfo?["kMRMediaRemoteNowPlayingInfoTitle"] as? String ?? ""
+        var artist = mrInfo?["kMRMediaRemoteNowPlayingInfoArtist"] as? String ?? ""
+        let album = mrInfo?["kMRMediaRemoteNowPlayingInfoAlbum"] as? String ?? ""
+        let duration = (mrInfo?["kMRMediaRemoteNowPlayingInfoDuration"] as? NSNumber)?.doubleValue ?? 0
+        let position = (mrInfo?["kMRMediaRemoteNowPlayingInfoElapsedTime"] as? NSNumber)?.doubleValue ?? 0
+
+        if title.isEmpty && asWindowSong.hasPrefix("歌曲名：") {
+            let stripped = asWindowSong.replacingOccurrences(of: "歌曲名：", with: "")
+            let segments = stripped.components(separatedBy: " - 歌手名：")
+            if segments.count >= 2 {
+                title = segments[0].trimmingCharacters(in: .whitespacesAndNewlines)
+                artist = segments[1].trimmingCharacters(in: .whitespacesAndNewlines)
+            } else {
+                title = stripped.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+        }
+
+        let state = ((isQQClient && mrIsPlaying) || asPlayState == "playing") ? "playing" : "paused"
+
+        if title.isEmpty {
+            return .success(MusicPlaybackState.stopped.rawValue)
+        }
+
+        let sep = "\u{001F}"
+        let trackID = "\(title):\(artist)"
+        let formatted = "\(state)\(sep)\(trackID)\(sep)\(title)\(sep)\(artist)\(sep)\(album)\(sep)\(duration)\(sep)\(position)\(sep)80\(sep)\(sep)\(asShuffle)\(sep)\(asRepeat)"
+        return .success(formatted)
+    }
+
     nonisolated private static func metadataScript(for source: MusicSource) -> String {
         switch source {
         case .appleMusic:
             return appleMusicMetadataScript
         case .spotify:
             return spotifyMetadataScript
+        case .qqMusic:
+            return ""
         }
     }
 
@@ -685,4 +883,88 @@ final class MusicService: ObservableObject {
 private struct AppleScriptFailure: Error, Equatable, Sendable {
     let code: Int
     let message: String
+}
+
+final class MediaRemoteBridge: @unchecked Sendable {
+    private static let bundle: CFBundle? = {
+        CFBundleCreate(
+            kCFAllocatorDefault,
+            NSURL(fileURLWithPath: "/System/Library/PrivateFrameworks/MediaRemote.framework")
+        )
+    }()
+
+    private typealias RegisterForNotificationsFn = @convention(c) (DispatchQueue) -> Void
+    private typealias GetNowPlayingInfoFn = @convention(c) (DispatchQueue, @escaping (CFDictionary?) -> Void) -> Void
+    private typealias GetNowPlayingClientFn = @convention(c) (DispatchQueue, @escaping (AnyObject?) -> Void) -> Void
+    private typealias GetIsPlayingFn = @convention(c) (DispatchQueue, @escaping (Bool) -> Void) -> Void
+    private typealias SendCommandFn = @convention(c) (UInt32, AnyObject?) -> Bool
+    private typealias SetElapsedTimeFn = @convention(c) (Double) -> Void
+
+    static func registerForNotifications(queue: DispatchQueue = .main) {
+        guard let bundle else { return }
+        if let ptr = CFBundleGetFunctionPointerForName(bundle, "MRMediaRemoteRegisterForNowPlayingNotifications" as CFString) {
+            let fn = unsafeBitCast(ptr, to: RegisterForNotificationsFn.self)
+            fn(queue)
+        }
+    }
+
+    static func getNowPlayingClient(queue: DispatchQueue = .main) async -> [String: Any]? {
+        guard let bundle else { return nil }
+        guard let ptr = CFBundleGetFunctionPointerForName(bundle, "MRMediaRemoteGetNowPlayingClient" as CFString) else { return nil }
+        let fn = unsafeBitCast(ptr, to: GetNowPlayingClientFn.self)
+        return await withCheckedContinuation { continuation in
+            fn(queue) { client in
+                guard let client = client as? NSObject else {
+                    continuation.resume(returning: nil)
+                    return
+                }
+                var dict: [String: Any] = [:]
+                if let bundleID = client.value(forKey: "bundleIdentifier") as? String {
+                    dict["bundleIdentifier"] = bundleID
+                }
+                if let displayName = client.value(forKey: "displayName") as? String {
+                    dict["displayName"] = displayName
+                }
+                continuation.resume(returning: dict)
+            }
+        }
+    }
+
+    static func getNowPlayingInfo(queue: DispatchQueue = .main) async -> [String: Any]? {
+        guard let bundle else { return nil }
+        guard let ptr = CFBundleGetFunctionPointerForName(bundle, "MRMediaRemoteGetNowPlayingInfo" as CFString) else { return nil }
+        let fn = unsafeBitCast(ptr, to: GetNowPlayingInfoFn.self)
+        return await withCheckedContinuation { continuation in
+            fn(queue) { info in
+                continuation.resume(returning: info as? [String: Any])
+            }
+        }
+    }
+
+    static func getIsPlaying(queue: DispatchQueue = .main) async -> Bool {
+        guard let bundle else { return false }
+        guard let ptr = CFBundleGetFunctionPointerForName(bundle, "MRMediaRemoteGetNowPlayingApplicationIsPlaying" as CFString) else { return false }
+        let fn = unsafeBitCast(ptr, to: GetIsPlayingFn.self)
+        return await withCheckedContinuation { continuation in
+            fn(queue) { isPlaying in
+                continuation.resume(returning: isPlaying)
+            }
+        }
+    }
+
+    @discardableResult
+    static func sendCommand(_ command: UInt32, userInfo: AnyObject? = nil) -> Bool {
+        guard let bundle else { return false }
+        guard let ptr = CFBundleGetFunctionPointerForName(bundle, "MRMediaRemoteSendCommand" as CFString) else { return false }
+        let fn = unsafeBitCast(ptr, to: SendCommandFn.self)
+        return fn(command, userInfo)
+    }
+
+    static func setElapsedTime(_ position: Double) {
+        guard let bundle else { return }
+        if let ptr = CFBundleGetFunctionPointerForName(bundle, "MRMediaRemoteSetElapsedTime" as CFString) {
+            let fn = unsafeBitCast(ptr, to: SetElapsedTimeFn.self)
+            fn(position)
+        }
+    }
 }

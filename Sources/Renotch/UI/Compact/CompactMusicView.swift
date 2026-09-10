@@ -11,11 +11,9 @@ struct CompactMusicView: View {
             AlbumArtworkView(artwork: music.artwork, cornerRadius: 6)
                 .frame(width: 24, height: 24)
                 .overlay(alignment: .bottomLeading) {
-                    if music.activeSource == .appleMusic {
-                        AppleMusicBadge(size: 10)
-                            .padding(1.5)
-                            .transition(.opacity.combined(with: .scale(scale: 0.85)))
-                    }
+                    MusicSourceBadge(source: music.activeSource, size: 10)
+                        .padding(1.5)
+                        .transition(.opacity.combined(with: .scale(scale: 0.85)))
                 }
                 .animation(.easeOut(duration: 0.2), value: music.activeSource)
 
@@ -89,7 +87,7 @@ struct CompactMusicView: View {
             return "\(artist) · \(music.activeSource.displayName)"
         }
         switch music.playbackState {
-        case .notRunning: return "Apple Music or Spotify"
+        case .notRunning: return "Apple Music, Spotify or QQ Music"
         case .stopped: return "Not playing"
         case .paused: return "Paused"
         case .playing: return "Now playing"

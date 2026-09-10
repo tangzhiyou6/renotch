@@ -67,6 +67,9 @@ fi
 if [ -f "$PROJECT_DIR/Sources/Renotch/Resources/TrayIconTemplate.png" ]; then
     cp "$PROJECT_DIR/Sources/Renotch/Resources/TrayIconTemplate.png" "$CONTENTS_PATH/Resources/"
 fi
+if [ -f "$PROJECT_DIR/Sources/Renotch/Resources/QQMusicIcon.png" ]; then
+    cp "$PROJECT_DIR/Sources/Renotch/Resources/QQMusicIcon.png" "$CONTENTS_PATH/Resources/"
+fi
 cp "$PROJECT_DIR/Resources/Info.plist" "$CONTENTS_PATH/Info.plist"
 cp -R "$PROJECT_DIR/BrowserExtension" "$CONTENTS_PATH/Resources/BrowserExtension"
 

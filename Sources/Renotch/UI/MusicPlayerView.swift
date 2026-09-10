@@ -11,8 +11,8 @@ struct MusicPlayerView: View {
                 .frame(width: 82, height: 82)
                 .shadow(color: .black.opacity(0.45), radius: 10, y: 5)
                 .overlay(alignment: .bottomLeading) {
-                    if music.isPlaying, music.activeSource == .appleMusic {
-                        AppleMusicBadge()
+                    if music.isPlaying {
+                        MusicSourceBadge(source: music.activeSource)
                             .padding(5)
                             .transition(.opacity.combined(with: .scale(scale: 0.85)))
                     }
@@ -166,7 +166,7 @@ struct MusicPlayerView: View {
             Text(
                 music.automationDenied
                     ? "Allow Re:notch to control \(music.activeSource.displayName) in System Settings → Privacy & Security → Automation."
-                    : "Play a song in Apple Music or Spotify and its artwork and controls will appear here."
+                    : "Play a song in Apple Music, Spotify, or QQ Music and its artwork and controls will appear here."
             )
             .font(.system(size: 10))
             .foregroundStyle(Color.notchMuted)
@@ -176,9 +176,10 @@ struct MusicPlayerView: View {
             HStack(spacing: 7) {
                 sourceButton(.appleMusic)
                 sourceButton(.spotify)
+                sourceButton(.qqMusic)
             }
         }
-        .frame(maxWidth: 310, alignment: .leading)
+        .frame(maxWidth: 340, alignment: .leading)
     }
 
     private func sourceButton(_ source: MusicSource) -> some View {
@@ -186,7 +187,7 @@ struct MusicPlayerView: View {
             music.open(source)
         } label: {
             HStack(spacing: 6) {
-                Image(systemName: source == .spotify ? "waveform.circle.fill" : "music.note")
+                sourceIcon(source)
                 Text("Open \(source.displayName)")
             }
             .font(.system(size: 10, weight: .semibold))
@@ -195,12 +196,24 @@ struct MusicPlayerView: View {
             .frame(height: 27)
             .background(
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(source == .spotify ? spotifyAccent : Color.musicAccent)
+                    .fill(sourceAccent(for: source))
             )
         }
         .buttonStyle(.plain)
         .disabled(!music.isInstalled(source))
         .opacity(music.isInstalled(source) ? 1 : 0.4)
+    }
+
+    @ViewBuilder
+    private func sourceIcon(_ source: MusicSource) -> some View {
+        switch source {
+        case .appleMusic:
+            Image(systemName: "music.note")
+        case .spotify:
+            Image(systemName: "waveform.circle.fill")
+        case .qqMusic:
+            QQMusicBadgeIcon(size: 13)
+        }
     }
 
     private var activePosition: Double {
@@ -211,12 +224,27 @@ struct MusicPlayerView: View {
         draggedVolume ?? music.volume
     }
 
+    private func sourceAccent(for source: MusicSource) -> Color {
+        switch source {
+        case .appleMusic:
+            return Color.musicAccent
+        case .spotify:
+            return spotifyAccent
+        case .qqMusic:
+            return qqMusicAccent
+        }
+    }
+
     private var sourceAccent: Color {
-        music.activeSource == .spotify ? spotifyAccent : Color.musicAccent
+        sourceAccent(for: music.activeSource)
     }
 
     private var spotifyAccent: Color {
         Color(red: 0.12, green: 0.78, blue: 0.36)
+    }
+
+    private var qqMusicAccent: Color {
+        Color(red: 0.19, green: 0.76, blue: 0.49)
     }
 
     private var repeatHelp: String {
@@ -234,40 +262,107 @@ struct MusicPlayerView: View {
     }
 }
 
-/// Source badge pinned to the bottom-left corner of the album artwork while
-/// Apple Music is playing: the classic beamed-notes glyph with the Apple
-/// Music gradient on a small blurred tile, sized to stay out of the way of
-/// the artwork itself.
-struct AppleMusicBadge: View {
-    /// Tile edge length; every inner metric scales from this so the badge
-    /// can shrink onto compact artwork without losing its proportions.
+struct QQMusicIconLoader {
+    static let shared = QQMusicIconLoader()
+
+    var iconImage: NSImage? {
+        if let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: MusicSource.qqMusic.bundleIdentifier) {
+            let icon = NSWorkspace.shared.icon(forFile: appURL.path)
+            return icon
+        }
+        if let url = Bundle.main.url(forResource: "QQMusicIcon", withExtension: "png"),
+           let image = NSImage(contentsOf: url) {
+            return image
+        }
+        if let bundleURL = Bundle.main.resourceURL?.appendingPathComponent("Renotch_Renotch.bundle"),
+           let bundle = Bundle(url: bundleURL),
+           let url = bundle.url(forResource: "QQMusicIcon", withExtension: "png"),
+           let image = NSImage(contentsOf: url) {
+            return image
+        }
+        return nil
+    }
+}
+
+struct MusicSourceBadge: View {
+    let source: MusicSource
     var size: CGFloat = 17
 
     private var cornerRadius: CGFloat { size * 5 / 17 }
 
     var body: some View {
-        Image(systemName: "music.note")
-            .font(.system(size: size * 9 / 17, weight: .bold))
-            .foregroundStyle(
-                LinearGradient(
-                    colors: [
-                        Color(red: 0.98, green: 0.35, blue: 0.47),
-                        Color(red: 0.98, green: 0.48, blue: 0.33)
-                    ],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-            )
+        Group {
+            switch source {
+            case .appleMusic:
+                Image(systemName: "music.note")
+                    .font(.system(size: size * 9 / 17, weight: .bold))
+                    .foregroundStyle(
+                        LinearGradient(
+                            colors: [
+                                Color(red: 0.98, green: 0.35, blue: 0.47),
+                                Color(red: 0.98, green: 0.48, blue: 0.33)
+                            ],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                    )
+            case .spotify:
+                Image(systemName: "waveform")
+                    .font(.system(size: size * 8 / 17, weight: .bold))
+                    .foregroundStyle(Color(red: 0.12, green: 0.78, blue: 0.36))
+            case .qqMusic:
+                QQMusicBadgeIcon(size: size * 12 / 17)
+            }
+        }
+        .frame(width: size, height: size)
+        .background(
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                .fill(.black.opacity(0.65))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                .stroke(Color.white.opacity(0.12), lineWidth: 0.5)
+        )
+        .accessibilityLabel("Playing from \(source.displayName)")
+    }
+}
+
+struct QQMusicBadgeIcon: View {
+    var size: CGFloat = 12
+
+    var body: some View {
+        if let image = QQMusicIconLoader.shared.iconImage {
+            Image(nsImage: image)
+                .resizable()
+                .scaledToFit()
+                .frame(width: size, height: size)
+                .clipShape(RoundedRectangle(cornerRadius: size * 0.22, style: .continuous))
+        } else {
+            ZStack {
+                Circle()
+                    .fill(
+                        LinearGradient(
+                            colors: [
+                                Color(red: 0.19, green: 0.76, blue: 0.49),
+                                Color(red: 0.12, green: 0.62, blue: 0.38)
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+                Image(systemName: "music.note")
+                    .font(.system(size: size * 0.65, weight: .bold))
+                    .foregroundStyle(Color(red: 1.0, green: 0.86, blue: 0.24))
+            }
             .frame(width: size, height: size)
-            .background(
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .fill(.black.opacity(0.55))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .stroke(Color.white.opacity(0.12), lineWidth: 0.5)
-            )
-            .accessibilityLabel("Playing from Apple Music")
+        }
+    }
+}
+
+struct AppleMusicBadge: View {
+    var size: CGFloat = 17
+    var body: some View {
+        MusicSourceBadge(source: .appleMusic, size: size)
     }
 }
 

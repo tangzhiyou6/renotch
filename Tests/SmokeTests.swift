@@ -155,8 +155,35 @@ struct SmokeTests {
         expect(MusicService.parseRepeatMode("one") == .one, "repeat-one parsing")
         expect(MusicRepeatMode.off.next(for: .appleMusic) == .all, "Apple Music repeat starts with all")
         expect(MusicRepeatMode.all.next(for: .appleMusic) == .one, "Apple Music repeat cycles to one")
-        expect(MusicRepeatMode.one.next(for: .appleMusic) == .off, "Apple Music repeat cycles off")
         expect(MusicRepeatMode.all.next(for: .spotify) == .off, "Spotify repeat toggles off")
+        expect(MusicSource.qqMusic.displayName == "QQ音乐", "QQ Music display name")
+        expect(MusicSource.qqMusic.bundleIdentifier == "com.tencent.QQMusicMac", "QQ Music bundle identifier")
+        expect(MusicRepeatMode.off.next(for: .qqMusic) == .all, "QQ Music repeat starts with all")
+        expect(MusicRepeatMode.all.next(for: .qqMusic) == .one, "QQ Music repeat cycles to one")
+        expect(MusicRepeatMode.one.next(for: .qqMusic) == .off, "QQ Music repeat cycles off")
+
+        let qqMusicSnapshot = MusicService.parseMetadata(
+            [
+                "playing",
+                "qq-track-1",
+                "海阔天空",
+                "Beyond",
+                "海阔天空",
+                "324",
+                "45",
+                "75",
+                "",
+                "true",
+                "one"
+            ].joined(separator: "\u{001F}"),
+            source: .qqMusic
+        )
+        expect(qqMusicSnapshot?.playbackState == .playing, "QQ Music playing state")
+        expect(qqMusicSnapshot?.track?.title == "海阔天空", "QQ Music track title")
+        expect(qqMusicSnapshot?.track?.artist == "Beyond", "QQ Music track artist")
+        expect(qqMusicSnapshot?.repeatMode == .one, "QQ Music repeat mode")
+        expect(qqMusicSnapshot?.shuffleEnabled == true, "QQ Music shuffle enabled")
+        expect(qqMusicSnapshot?.track?.cacheKey == "qqMusic:海阔天空:beyond", "QQ Music track cacheKey")
 
         let browser = BrowserActivityService(observeBridge: false)
         let mediaMessage = try JSONSerialization.data(withJSONObject: [

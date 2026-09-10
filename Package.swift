@@ -16,7 +16,8 @@ let package = Package(
             name: "Renotch",
             path: "Sources/Renotch",
             resources: [
-                .copy("Resources/TrayIconTemplate.png")
+                .copy("Resources/TrayIconTemplate.png"),
+                .copy("Resources/QQMusicIcon.png")
             ],
             swiftSettings: [
                 .swiftLanguageMode(.v5)
